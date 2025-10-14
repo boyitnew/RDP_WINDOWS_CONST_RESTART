@@ -11,84 +11,52 @@ jobs:
     steps:
       - name: Configure Core RDP Settings
         run: |
-          # Enable Remote Desktop
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-                             -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "SecurityLayer" -Value 0 -Force
-
-          # Configure firewall
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
           netsh advfirewall firewall delete rule name="RDP-Tailscale" 2>$null
-          netsh advfirewall firewall add rule name="RDP-Tailscale" `
-            dir=in action=allow protocol=TCP localport=3389
-
-          # Restart RDP service
+          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
           Restart-Service -Name TermService -Force
-          
-          # Set RDP service to auto-start
           Set-Service -Name TermService -StartupType Automatic
 
       - name: Create RDP User with Fixed Password
         run: |
-          # Fixed password (must be strong: 8+ chars, upper, lower, number, special)
-          $password = "P@ssw0rd123!"
+          $password = "*r96319631P-"
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          
-          # Create user
           New-LocalUser -Name "RDP" -Password $securePass -PasswordNeverExpires -AccountNeverExpires -ErrorAction Stop
           Add-LocalGroupMember -Group "Administrators" -Member "RDP" -ErrorAction Stop
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP" -ErrorAction Stop
-          
           echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
-          
-          Write-Host "User 'RDP' created successfully"
+          Write-Host "User RDP created successfully"
 
       - name: Install Tailscale
         run: |
           $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
           $installerPath = "$env:TEMP\tailscale.msi"
-          
           Write-Host "Downloading Tailscale..."
           Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
-          
           Write-Host "Installing Tailscale..."
           Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
           Remove-Item $installerPath -Force
-          
           Write-Host "Tailscale installed successfully"
 
       - name: Configure Tailscale to Auto-Start
         run: |
-          # Set Tailscale service to auto-start
           Set-Service -Name Tailscale -StartupType Automatic -ErrorAction SilentlyContinue
-          
-          # Create startup script for Tailscale connection
-          $startupScript = @"
-Start-Sleep -Seconds 10
-& "C:\Program Files\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID --accept-routes
-"@
-          
+          $startupScript = "Start-Sleep -Seconds 10`n& `"C:\Program Files\Tailscale\tailscale.exe`" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID --accept-routes"
           $scriptPath = "C:\ProgramData\tailscale-startup.ps1"
           $startupScript | Out-File -FilePath $scriptPath -Encoding UTF8
-          
-          # Create scheduled task to run on startup
           $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -File `"$scriptPath`""
           $trigger = New-ScheduledTaskTrigger -AtStartup
           $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
           $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
-          
           Register-ScheduledTask -TaskName "TailscaleAutoConnect" -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force
-          
           Write-Host "Tailscale auto-start configured"
 
       - name: Establish Tailscale Connection
         run: |
           Write-Host "Connecting to Tailscale..."
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID --accept-routes
-          
-          # Wait for Tailscale to assign an IP
           $tsIP = $null
           $retries = 0
           while (-not $tsIP -and $retries -lt 20) {
@@ -97,12 +65,10 @@ Start-Sleep -Seconds 10
               $retries++
               Write-Host "Waiting for Tailscale IP... Attempt $retries"
           }
-          
           if (-not $tsIP) {
               Write-Error "Tailscale IP not assigned after 60 seconds"
               exit 1
           }
-          
           $tsIP = $tsIP.Trim()
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
           Write-Host "Tailscale connected: $tsIP"
@@ -110,47 +76,39 @@ Start-Sleep -Seconds 10
       - name: Verify RDP Accessibility
         run: |
           Write-Host "Testing RDP connectivity on $env:TAILSCALE_IP..."
-          
-          # Wait a moment for RDP to be ready
           Start-Sleep -Seconds 5
-          
-          # Test connectivity
           $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389 -WarningAction SilentlyContinue
           if ($testResult.TcpTestSucceeded) {
-              Write-Host "✓ RDP is accessible on port 3389" -ForegroundColor Green
+              Write-Host "RDP is accessible on port 3389"
           } else {
-              Write-Warning "RDP test failed, but continuing (may work externally)"
+              Write-Warning "RDP test failed, but continuing"
           }
 
       - name: Display Connection Info
         run: |
-          Write-Host "`n========================================" -ForegroundColor Cyan
-          Write-Host "       RDP CONNECTION READY" -ForegroundColor Green
-          Write-Host "========================================" -ForegroundColor Cyan
-          Write-Host "Tailscale IP: $env:TAILSCALE_IP" -ForegroundColor Yellow
-          Write-Host "Username:     RDP" -ForegroundColor Yellow
-          Write-Host "Password:     *r96319631P-" -ForegroundColor Yellow
-          Write-Host "========================================" -ForegroundColor Cyan
-          Write-Host "`nConnection will remain active for 60 hours" -ForegroundColor White
-          Write-Host "You can safely reboot - Tailscale will reconnect automatically`n" -ForegroundColor Green
+          Write-Host "========================================"
+          Write-Host "       RDP CONNECTION READY"
+          Write-Host "========================================"
+          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
+          Write-Host "Username:     RDP"
+          Write-Host "Password:     *r96319631P-"
+          Write-Host "========================================"
+          Write-Host "Connection will remain active for 60 hours"
+          Write-Host "You can safely reboot - Tailscale will reconnect automatically"
 
       - name: Maintain Connection
         run: |
-          # Keep runner active
           $counter = 0
           while ($true) {
               $counter++
               $currentTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-              
-              # Check Tailscale status every 5 minutes
               if ($counter % 1 -eq 0) {
                   $tsStatus = & "$env:ProgramFiles\Tailscale\tailscale.exe" status --json 2>$null | ConvertFrom-Json
                   if ($tsStatus.BackendState -eq "Running") {
-                      Write-Host "[$currentTime] ✓ RDP Active | Tailscale: Connected" -ForegroundColor Green
+                      Write-Host "[$currentTime] RDP Active | Tailscale: Connected"
                   } else {
-                      Write-Host "[$currentTime] ⚠ RDP Active | Tailscale: Reconnecting..." -ForegroundColor Yellow
+                      Write-Host "[$currentTime] RDP Active | Tailscale: Reconnecting..."
                   }
               }
-              
               Start-Sleep -Seconds 300
           }
