@@ -40,100 +40,94 @@ jobs:
           Remove-Item $installerPath -Force
           Write-Host "Tailscale installed successfully"
 
-      - name: Configure Persistent Tailscale Connection
+      - name: Create Reconnection Script
         run: |
-          $reconnectScript = @'
-          $logFile = "C:\ProgramData\tailscale-reconnect.log"
+          $scriptContent = @"
+          `$logFile = "C:\ProgramData\tailscale-reconnect.log"
           function Write-Log {
-              param($Message)
-              $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-              "$timestamp - $Message" | Out-File -FilePath $logFile -Append
-              Write-Host $Message
+              param(`$Message)
+              `$timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+              "`$timestamp - `$Message" | Out-File -FilePath `$logFile -Append
+              Write-Host `$Message
           }
 
           Write-Log "Starting Tailscale reconnection script..."
           
-          $maxWait = 60
-          $waited = 0
-          while ($waited -lt $maxWait) {
-              $service = Get-Service -Name Tailscale -ErrorAction SilentlyContinue
-              if ($service -and $service.Status -eq "Running") {
+          `$maxWait = 60
+          `$waited = 0
+          while (`$waited -lt `$maxWait) {
+              `$service = Get-Service -Name Tailscale -ErrorAction SilentlyContinue
+              if (`$service -and `$service.Status -eq "Running") {
                   Write-Log "Tailscale service is running"
                   break
               }
               Start-Sleep -Seconds 2
-              $waited += 2
-              Write-Log "Waiting for Tailscale service... ($waited seconds)"
+              `$waited += 2
+              Write-Log "Waiting for Tailscale service... (`$waited seconds)"
           }
 
-          $maxRetries = 10
-          $retryCount = 0
-          $connected = $false
+          `$authKey = "${{ secrets.TAILSCALE_AUTH_KEY }}"
+          `$hostname = "gh-runner-$env:GITHUB_RUN_ID"
+          `$maxRetries = 10
+          `$retryCount = 0
+          `$connected = `$false
 
-          while (-not $connected -and $retryCount -lt $maxRetries) {
+          while (-not `$connected -and `$retryCount -lt `$maxRetries) {
               try {
-                  Write-Log "Attempting to connect to Tailscale (Attempt $($retryCount + 1)/$maxRetries)..."
+                  Write-Log "Attempting to connect to Tailscale (Attempt `$(`$retryCount + 1)/`$maxRetries)..."
                   
-                  & "C:\Program Files\Tailscale\tailscale.exe" logout 2>$null
+                  & "C:\Program Files\Tailscale\tailscale.exe" logout 2>`$null
                   Start-Sleep -Seconds 2
                   
-                  $output = & "C:\Program Files\Tailscale\tailscale.exe" up --authkey=TSKEY_PLACEHOLDER --hostname=gh-runner-RUNID_PLACEHOLDER --accept-routes --reset 2>&1
-                  Write-Log "Tailscale up output: $output"
+                  `$output = & "C:\Program Files\Tailscale\tailscale.exe" up --authkey=`$authKey --hostname=`$hostname --accept-routes --reset 2>&1
+                  Write-Log "Tailscale up output: `$output"
                   
                   Start-Sleep -Seconds 5
-                  $tsIP = & "C:\Program Files\Tailscale\tailscale.exe" ip -4 2>$null
+                  `$tsIP = & "C:\Program Files\Tailscale\tailscale.exe" ip -4 2>`$null
                   
-                  if ($tsIP -and $tsIP.Trim() -ne "") {
-                      $tsIP = $tsIP.Trim()
-                      Write-Log "Successfully connected! Tailscale IP: $tsIP"
-                      
-                      $tsIP | Out-File -FilePath "C:\ProgramData\tailscale-ip.txt" -Force
-                      
-                      $connected = $true
+                  if (`$tsIP -and `$tsIP.Trim() -ne "") {
+                      `$tsIP = `$tsIP.Trim()
+                      Write-Log "Successfully connected! Tailscale IP: `$tsIP"
+                      `$tsIP | Out-File -FilePath "C:\ProgramData\tailscale-ip.txt" -Force
+                      `$connected = `$true
                   } else {
                       Write-Log "No IP assigned yet, retrying..."
-                      $retryCount++
+                      `$retryCount++
                       Start-Sleep -Seconds 10
                   }
               } catch {
-                  Write-Log "Error: $_"
-                  $retryCount++
+                  Write-Log "Error: `$_"
+                  `$retryCount++
                   Start-Sleep -Seconds 10
               }
           }
 
-          if ($connected) {
+          if (`$connected) {
               Write-Log "Tailscale connection established successfully"
-              
-              while ($true) {
+              while (`$true) {
                   Start-Sleep -Seconds 60
-                  $status = & "C:\Program Files\Tailscale\tailscale.exe" status --json 2>$null | ConvertFrom-Json
-                  if ($status.BackendState -ne "Running") {
+                  `$status = & "C:\Program Files\Tailscale\tailscale.exe" status --json 2>`$null | ConvertFrom-Json
+                  if (`$status.BackendState -ne "Running") {
                       Write-Log "Connection lost, reconnecting..."
-                      & "C:\Program Files\Tailscale\tailscale.exe" up --authkey=TSKEY_PLACEHOLDER --hostname=gh-runner-RUNID_PLACEHOLDER --accept-routes
+                      & "C:\Program Files\Tailscale\tailscale.exe" up --authkey=`$authKey --hostname=`$hostname --accept-routes
                   }
               }
           } else {
-              Write-Log "Failed to establish Tailscale connection after $maxRetries attempts"
+              Write-Log "Failed to establish Tailscale connection after `$maxRetries attempts"
               exit 1
           }
-'@
-          
-          $reconnectScript = $reconnectScript -replace 'TSKEY_PLACEHOLDER', '${{ secrets.TAILSCALE_AUTH_KEY }}'
-          $reconnectScript = $reconnectScript -replace 'RUNID_PLACEHOLDER', '$env:GITHUB_RUN_ID'
+          "@
           
           $scriptPath = "C:\ProgramData\tailscale-reconnect.ps1"
-          $reconnectScript | Out-File -FilePath $scriptPath -Encoding UTF8
+          $scriptContent | Out-File -FilePath $scriptPath -Encoding UTF8
           Write-Host "Reconnection script created at $scriptPath"
 
       - name: Create Startup Scheduled Task
         run: |
-          # حذف task قبلی اگر وجود داشت
           Unregister-ScheduledTask -TaskName "TailscaleAutoConnect" -Confirm:$false -ErrorAction SilentlyContinue
           
           $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -WindowStyle Hidden -File `"C:\ProgramData\tailscale-reconnect.ps1`""
           
-          # trigger با تاخیر 30 ثانیه بعد از استارت
           $trigger = New-ScheduledTaskTrigger -AtStartup
           $trigger.Delay = "PT30S"
           
@@ -154,14 +148,11 @@ jobs:
         run: |
           Write-Host "Connecting to Tailscale..."
           
-          # logout اول
           & "$env:ProgramFiles\Tailscale\tailscale.exe" logout 2>$null
           Start-Sleep -Seconds 2
           
-          # اتصال با reset
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID --accept-routes --reset
           
-          # منتظر بمون تا IP بگیره
           $tsIP = $null
           $retries = 0
           while (-not $tsIP -and $retries -lt 30) {
@@ -189,7 +180,7 @@ jobs:
           Start-Sleep -Seconds 5
           $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389 -WarningAction SilentlyContinue
           if ($testResult.TcpTestSucceeded) {
-              Write-Host "✓ RDP is accessible on port 3389"
+              Write-Host "RDP is accessible on port 3389"
           } else {
               Write-Warning "RDP test failed, but continuing"
           }
@@ -203,9 +194,9 @@ jobs:
           Write-Host "Username:     RDP"
           Write-Host "Password:     *r96319631P-"
           Write-Host "========================================"
-          Write-Host "✓ Auto-reconnect configured"
-          Write-Host "✓ Survives reboots"
-          Write-Host "✓ Connection will remain active for 60 hours"
+          Write-Host "Auto-reconnect configured"
+          Write-Host "Survives reboots"
+          Write-Host "Connection will remain active for 60 hours"
           Write-Host ""
           Write-Host "After reboot, wait 1-2 minutes for reconnection"
           Write-Host "Check log: C:\ProgramData\tailscale-reconnect.log"
@@ -222,10 +213,9 @@ jobs:
                   $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4 2>$null
                   
                   if ($tsStatus.BackendState -eq "Running" -and $tsIP) {
-                      Write-Host "[$currentTime] ✓ RDP Active | Tailscale: Connected ($($tsIP.Trim()))"
+                      Write-Host "[$currentTime] RDP Active | Tailscale: Connected ($($tsIP.Trim()))"
                   } else {
-                      Write-Host "[$currentTime] ⚠ RDP Active | Tailscale: Reconnecting..."
-                      # تلاش برای اتصال مجدد
+                      Write-Host "[$currentTime] RDP Active | Tailscale: Reconnecting..."
                       & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID --accept-routes 2>$null
                   }
               }
