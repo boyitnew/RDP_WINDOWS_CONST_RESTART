@@ -42,7 +42,6 @@ jobs:
 
       - name: Configure Persistent Tailscale Connection
         run: |
-          # ایجاد اسکریپت قوی برای اتصال خودکار
           $reconnectScript = @'
           $logFile = "C:\ProgramData\tailscale-reconnect.log"
           function Write-Log {
@@ -54,7 +53,6 @@ jobs:
 
           Write-Log "Starting Tailscale reconnection script..."
           
-          # صبر کردن تا سرویس Tailscale آماده بشه
           $maxWait = 60
           $waited = 0
           while ($waited -lt $maxWait) {
@@ -68,7 +66,6 @@ jobs:
               Write-Log "Waiting for Tailscale service... ($waited seconds)"
           }
 
-          # اتصال به Tailscale با retry
           $maxRetries = 10
           $retryCount = 0
           $connected = $false
@@ -77,15 +74,12 @@ jobs:
               try {
                   Write-Log "Attempting to connect to Tailscale (Attempt $($retryCount + 1)/$maxRetries)..."
                   
-                  # اول logout کن تا مطمئن بشیم از صفر شروع میکنیم
                   & "C:\Program Files\Tailscale\tailscale.exe" logout 2>$null
                   Start-Sleep -Seconds 2
                   
-                  # حالا وصل شو
-                  $output = & "C:\Program Files\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID --accept-routes --reset 2>&1
+                  $output = & "C:\Program Files\Tailscale\tailscale.exe" up --authkey=TSKEY_PLACEHOLDER --hostname=gh-runner-RUNID_PLACEHOLDER --accept-routes --reset 2>&1
                   Write-Log "Tailscale up output: $output"
                   
-                  # بررسی اتصال
                   Start-Sleep -Seconds 5
                   $tsIP = & "C:\Program Files\Tailscale\tailscale.exe" ip -4 2>$null
                   
@@ -93,7 +87,6 @@ jobs:
                       $tsIP = $tsIP.Trim()
                       Write-Log "Successfully connected! Tailscale IP: $tsIP"
                       
-                      # ذخیره IP برای استفاده بعدی
                       $tsIP | Out-File -FilePath "C:\ProgramData\tailscale-ip.txt" -Force
                       
                       $connected = $true
@@ -112,13 +105,12 @@ jobs:
           if ($connected) {
               Write-Log "Tailscale connection established successfully"
               
-              # اضافه کردن یک loop برای نگهداری اتصال
               while ($true) {
                   Start-Sleep -Seconds 60
                   $status = & "C:\Program Files\Tailscale\tailscale.exe" status --json 2>$null | ConvertFrom-Json
                   if ($status.BackendState -ne "Running") {
                       Write-Log "Connection lost, reconnecting..."
-                      & "C:\Program Files\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID --accept-routes
+                      & "C:\Program Files\Tailscale\tailscale.exe" up --authkey=TSKEY_PLACEHOLDER --hostname=gh-runner-RUNID_PLACEHOLDER --accept-routes
                   }
               }
           } else {
@@ -126,6 +118,9 @@ jobs:
               exit 1
           }
 '@
+          
+          $reconnectScript = $reconnectScript -replace 'TSKEY_PLACEHOLDER', '${{ secrets.TAILSCALE_AUTH_KEY }}'
+          $reconnectScript = $reconnectScript -replace 'RUNID_PLACEHOLDER', '$env:GITHUB_RUN_ID'
           
           $scriptPath = "C:\ProgramData\tailscale-reconnect.ps1"
           $reconnectScript | Out-File -FilePath $scriptPath -Encoding UTF8
